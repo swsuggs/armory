@@ -9,6 +9,11 @@ from armory.logs import log
 from armory.scenarios.object_detection import ObjectDetectionTask
 
 
+# Exporting GIFs hack:
+# Should be able to run this scenario.  On this branch, the Carla AdvPatch attack
+# inherits a hacked ART class that uses model to make predictions every few attack iters
+# Then passes the results back through the y_pred object to export
+
 class CarlaObjectDetectionTask(ObjectDetectionTask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
