@@ -17,7 +17,220 @@ from armory.art_experimental.attacks.carla_obj_det_utils import (
 from armory.logs import log
 
 
-class CARLAAdversarialPatchPyTorch(AdversarialPatchPyTorch):
+class AdversarialPatchPyTorch_Hack(AdversarialPatchPyTorch):
+   
+    def generate(  # type: ignore
+        self, x: np.ndarray, y: Optional[np.ndarray] = None, model=None, **kwargs
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Generate an adversarial patch and return the patch and its mask in arrays.
+
+        :param x: An array with the original input images of shape NCHW or input videos of shape NFCHW.
+        :param y: An array with the original true labels.
+        :param mask: An boolean array of shape equal to the shape of a single samples (1, H, W) or the shape of `x`
+                     (N, H, W) without their channel dimensions. Any features for which the mask is True can be the
+                     center location of the patch during sampling.
+        :type mask: `np.ndarray`
+        :return: An array with adversarial patch and an array of the patch mask.
+        """
+        import torch
+
+        shuffle = kwargs.get("shuffle", True)
+        mask = kwargs.get("mask")
+        if mask is not None:
+            mask = mask.copy()
+        mask = self._check_mask(mask=mask, x=x)
+
+        if self.patch_location is not None and mask is not None:
+            raise ValueError("Masks can only be used if the `patch_location` is `None`.")
+
+        if y is None:  # pragma: no cover
+            logger.info("Setting labels to estimator predictions and running untargeted attack because `y=None`.")
+            y = to_categorical(np.argmax(self.estimator.predict(x=x), axis=1), nb_classes=self.estimator.nb_classes)
+
+        if hasattr(self.estimator, "nb_classes"):
+            y = check_and_transform_label_format(labels=y, nb_classes=self.estimator.nb_classes)
+
+            # check if logits or probabilities
+            y_pred = self.estimator.predict(x=x[[0]])
+
+            if is_probability(y_pred):
+                self.use_logits = False
+            else:
+                self.use_logits = True
+
+        if isinstance(y, np.ndarray):
+            x_tensor = torch.Tensor(x)
+            y_tensor = torch.Tensor(y)
+
+            if mask is None:
+                dataset = torch.utils.data.TensorDataset(x_tensor, y_tensor)
+                data_loader = torch.utils.data.DataLoader(
+                    dataset=dataset,
+                    batch_size=self.batch_size,
+                    shuffle=shuffle,
+                    drop_last=False,
+                )
+            else:
+                mask_tensor = torch.Tensor(mask)
+                dataset = torch.utils.data.TensorDataset(x_tensor, y_tensor, mask_tensor)
+                data_loader = torch.utils.data.DataLoader(
+                    dataset=dataset,
+                    batch_size=self.batch_size,
+                    shuffle=shuffle,
+                    drop_last=False,
+                )
+        else:
+
+            class ObjectDetectionDataset(torch.utils.data.Dataset):
+                """
+                Object detection dataset in PyTorch.
+                """
+
+                def __init__(self, x, y):
+                    self.x = x
+                    self.y = y
+
+                def __len__(self):
+                    return self.x.shape[0]
+
+                def __getitem__(self, idx):
+                    img = torch.from_numpy(self.x[idx])
+
+                    target = {}
+                    target["boxes"] = torch.from_numpy(self.y[idx]["boxes"])
+                    target["labels"] = torch.from_numpy(self.y[idx]["labels"])
+                    target["scores"] = torch.from_numpy(self.y[idx]["scores"])
+
+                    return img, target
+
+            class ObjectDetectionDatasetMask(torch.utils.data.Dataset):
+                """
+                Object detection dataset in PyTorch.
+                """
+
+                def __init__(self, x, y, mask):
+                    self.x = x
+                    self.y = y
+                    self.mask = mask
+
+                def __len__(self):
+                    return self.x.shape[0]
+
+                def __getitem__(self, idx):
+                    img = torch.from_numpy(self.x[idx])
+
+                    target = {}
+                    target["boxes"] = torch.from_numpy(y[idx]["boxes"])
+                    target["labels"] = torch.from_numpy(y[idx]["labels"])
+                    target["scores"] = torch.from_numpy(y[idx]["scores"])
+                    mask_i = torch.from_numpy(self.mask[idx])
+
+                    return img, target, mask_i
+
+            dataset_object_detection: Union[ObjectDetectionDataset, ObjectDetectionDatasetMask]
+            if mask is None:
+                dataset_object_detection = ObjectDetectionDataset(x, y)
+            else:
+                dataset_object_detection = ObjectDetectionDatasetMask(x, y, mask)
+
+            data_loader = torch.utils.data.DataLoader(
+                dataset=dataset_object_detection,
+                batch_size=self.batch_size,
+                shuffle=shuffle,
+                drop_last=False,
+            )
+
+        ### HACK didn't know that was a keyword
+        from armory.metrics.task import carla_od_AP_per_class, carla_od_hallucinations_per_image
+        from armory.instrument.export import ObjectDetectionExporter
+        OD = ObjectDetectionExporter(
+            "/workspace/exports/",
+            default_export_kwargs={"with_boxes": True, "classes_to_skip": [4]},
+        )
+
+        for i_iter in trange(self.max_iter, desc="Adversarial Patch PyTorch", disable=not self.verbose):
+            if mask is None:
+                for images, target in data_loader:
+                    images = images.to(self.estimator.device)
+                    if isinstance(target, torch.Tensor):
+                        target = target.to(self.estimator.device)
+                    else:
+                        target["boxes"] = target["boxes"].to(self.estimator.device)
+                        target["labels"] = target["labels"].to(self.estimator.device)
+                        target["scores"] = target["scores"].to(self.estimator.device)
+                    _ = self._train_step(images=images, target=target, mask=None)
+            else:
+                for images, target, mask_i in data_loader:
+                    images = images.to(self.estimator.device)
+                    if isinstance(target, torch.Tensor):
+                        target = target.to(self.estimator.device)
+                    else:
+                        target["boxes"] = target["boxes"].to(self.estimator.device)
+                        target["labels"] = target["labels"].to(self.estimator.device)
+                        target["scores"] = target["scores"].to(self.estimator.device)
+                    mask_i = mask_i.to(self.estimator.device)
+                    _ = self._train_step(images=images, target=target, mask=mask_i)
+
+            if model is not None:
+                if i_iter%10 == 0:
+                    x_patched = (
+                            self._random_overlay(
+                        images=torch.from_numpy(x).to(self.estimator.device), patch=self._patch, mask=mask
+                    )
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+                
+                    print(x_patched.shape)
+                    y_pred = model.predict(x_patched)
+                    hals = carla_od_hallucinations_per_image(y, y_pred)
+                    mAP = carla_od_AP_per_class(y, y_pred)
+                    map_ = np.mean([g for g in mAP["class"].values() if g != 0])
+
+                    mAP = mAP["mean"]
+                    y_pred[0]["hallucs"]=hals
+                    y_pred[0]["map"]=map_
+                    y_pred[0]["iters"]=i_iter
+
+                    name = "a"*(52-int(i_iter/10))
+                    OD.export(x_patched[0], f"generation_{name}", y=y[0], y_pred=y_pred[0])
+
+            # END HACK I guess
+
+
+            # Write summary
+            if self.summary_writer is not None:  # pragma: no cover
+                x_patched = (
+                    self._random_overlay(
+                        images=torch.from_numpy(x).to(self.estimator.device), patch=self._patch, mask=mask
+                    )
+                    .detach()
+                    .cpu()
+                    .numpy()
+                )
+
+                self.summary_writer.update(
+                    batch_id=0,
+                    global_step=i_iter,
+                    grad=None,
+                    patch=self._patch,
+                    estimator=self.estimator,
+                    x=x_patched,
+                    y=y,
+                    targeted=self.targeted,
+                )
+
+        if self.summary_writer is not None:
+            self.summary_writer.reset()
+
+        return (
+            self._patch.detach().cpu().numpy(),
+            self._get_circular_patch_mask(nb_samples=1).cpu().numpy()[0],
+        )
+
+class CARLAAdversarialPatchPyTorch(AdversarialPatchPyTorch_Hack):
     """
     Apply patch attack to RGB channels and (optionally) masked PGD attack to depth channels.
     """
@@ -356,7 +569,7 @@ class CARLAAdversarialPatchPyTorch(AdversarialPatchPyTorch):
 
         return patched_images
 
-    def generate(self, x, y=None, y_patch_metadata=None):
+    def generate(self, x, model, y=None, y_patch_metadata=None):
         """
         param x: Sample images. For single-modality, shape=(NHW3). For multimodality, shape=(NHW6)
         param y: [Optional] Sample labels. List of dictionaries,
@@ -466,7 +679,8 @@ class CARLAAdversarialPatchPyTorch(AdversarialPatchPyTorch):
                     device=self.estimator.device,
                 )
 
-            patch, _ = super().generate(np.expand_dims(x[i], axis=0), y=[y_gt])
+            # super().max_iter = maxITER
+            patch, _ = super().generate(np.expand_dims(x[i], axis=0), y=[y_gt], model=model)
 
             # Patch image
             x_tensor = torch.tensor(np.expand_dims(x[i], axis=0)).to(
