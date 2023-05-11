@@ -169,21 +169,24 @@ class ObjectDetectionExporter(ImageClassificationExporter):
             for true_box, label in zip(bboxes_true, labels_true):
                 if classes_to_skip is not None and label in classes_to_skip:
                     continue
-                # box_layer.rectangle(true_box.astype("float32"), outline="red", width=2)
+                box_layer.rectangle(true_box.astype("float32"), outline="red", width=2)
                 # rectangle() gives a very unhelpful error if the box is float64
+                # GIF HACK: comment above line to turn off red ground truth boxes
 
         if y_pred is not None:
             bboxes_pred = y_pred["boxes"][y_pred["scores"] > score_threshold]
             labels_pred = y_pred["labels"][y_pred["scores"] > score_threshold]
-            if "hallucs" in y_pred:
+
+            if "hallucs" in y_pred:  # GIF HACK
                 hal = y_pred["hallucs"][0]
                 mAP = y_pred["map"]
                 iters = y_pred["iters"]
                 
-                font = ImageFont.truetype("Anonymous.ttf", 26)
-                box_layer.text((260,36), f"Iterations: {iters}", font=font, fill="black")
-                box_layer.text((260,72), f"Mean AP: {mAP:.2f}", font=font, fill="black")
-                box_layer.text((260,108), f"Hallucinations: {hal}", font=font, fill="black")
+                font = ImageFont.truetype("Anonymous.ttf", 26) 
+                # Apparently, requires actual font file if you want to change the font size
+                box_layer.text((26,36), f"Iterations: {iters}", font=font, fill="black")
+                box_layer.text((26,72), f"Mean AP: {mAP:.2f}", font=font, fill="black")
+                box_layer.text((26,108), f"Hallucinations: {hal}", font=font, fill="black")
 
             for pred_box, label in zip(bboxes_pred, labels_pred):
                 box_layer.rectangle(
@@ -193,13 +196,15 @@ class ObjectDetectionExporter(ImageClassificationExporter):
                     (pred_box[0], pred_box[1] - 10, pred_box[0] + 25, pred_box[1]),
                     fill="white",
                 )
-                if label == 1: lab = 'Ped'
-                elif label == 3: lab = "Light"
-                elif label == 2: lab = "Car"
+
+                # GIF HACK hard-coded CARLA OD labels
+                if label == 1: label = 'Ped'
+                elif label == 3: label = "Light"
+                elif label == 2: label = "Car"
 
                 box_layer.text(
                     (pred_box[0] + 3, pred_box[1] - 10),  ## Put label on predicted box
-                    lab,
+                    label,
                     font=ImageFont.load_default(),
                     fill="black",
                 )

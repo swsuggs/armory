@@ -8,6 +8,11 @@ import cv2
 import numpy as np
 import torch
 
+# GIF HACK imports -- stuff needed to inherit ART generate
+from tqdm.auto import trange
+from typing import Optional, Tuple, Union, TYPE_CHECKING
+from art.utils import check_and_transform_label_format, is_probability, to_categorical
+
 from armory.art_experimental.attacks.carla_obj_det_utils import (
     linear_depth_to_rgb,
     rgb_depth_to_linear,
@@ -141,11 +146,11 @@ class AdversarialPatchPyTorch_Hack(AdversarialPatchPyTorch):
                 drop_last=False,
             )
 
-        ### HACK didn't know that was a keyword
+        ### GIF HACK begin
         from armory.metrics.task import carla_od_AP_per_class, carla_od_hallucinations_per_image
         from armory.instrument.export import ObjectDetectionExporter
         OD = ObjectDetectionExporter(
-            "/workspace/exports/",
+            "/workspace/exports/",  # docker container
             default_export_kwargs={"with_boxes": True, "classes_to_skip": [4]},
         )
 
@@ -173,7 +178,7 @@ class AdversarialPatchPyTorch_Hack(AdversarialPatchPyTorch):
                     _ = self._train_step(images=images, target=target, mask=mask_i)
 
             if model is not None:
-                if i_iter%10 == 0:
+                if i_iter%10 == 0:  ## Set how frequently to export images
                     x_patched = (
                             self._random_overlay(
                         images=torch.from_numpy(x).to(self.estimator.device), patch=self._patch, mask=mask
@@ -181,23 +186,22 @@ class AdversarialPatchPyTorch_Hack(AdversarialPatchPyTorch):
                     .detach()
                     .cpu()
                     .numpy()
-                )
+                    )
                 
-                    print(x_patched.shape)
                     y_pred = model.predict(x_patched)
                     hals = carla_od_hallucinations_per_image(y, y_pred)
                     mAP = carla_od_AP_per_class(y, y_pred)
                     map_ = np.mean([g for g in mAP["class"].values() if g != 0])
+                    # absent classes should not be included... but they were some of the time??
 
                     mAP = mAP["mean"]
-                    y_pred[0]["hallucs"]=hals
-                    y_pred[0]["map"]=map_
+                    y_pred[0]["hallucs"]=hals  # put these values into y so they can be
+                    y_pred[0]["map"]=map_      # drawn on the exported images
                     y_pred[0]["iters"]=i_iter
 
-                    name = "a"*(52-int(i_iter/10))
-                    OD.export(x_patched[0], f"generation_{name}", y=y[0], y_pred=y_pred[0])
+                    OD.export(x_patched[0], f"generation_{i_iter}", y=y[0], y_pred=y_pred[0])
 
-            # END HACK I guess
+            # GIF HACK end I think
 
 
             # Write summary
@@ -230,7 +234,7 @@ class AdversarialPatchPyTorch_Hack(AdversarialPatchPyTorch):
             self._get_circular_patch_mask(nb_samples=1).cpu().numpy()[0],
         )
 
-class CARLAAdversarialPatchPyTorch(AdversarialPatchPyTorch_Hack):
+class CARLAAdversarialPatchPyTorch(AdversarialPatchPyTorch_Hack):  # GIF HACK: inherit hacked class
     """
     Apply patch attack to RGB channels and (optionally) masked PGD attack to depth channels.
     """

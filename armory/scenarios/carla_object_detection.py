@@ -56,7 +56,7 @@ class CarlaObjectDetectionTask(ObjectDetectionTask):
 
             x_adv = self.attack.generate(
                 x=x,
-                model=self.model,
+                model=self.model,  # GIF HACK: pass model to attack for periodic predictions
                 y=y_target,
                 y_patch_metadata=self.y_patch_metadata,
                 **self.generate_kwargs,
